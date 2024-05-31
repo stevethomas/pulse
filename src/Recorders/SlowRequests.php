@@ -2,6 +2,8 @@
 
 namespace Laravel\Pulse\Recorders;
 
+use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
@@ -23,6 +25,13 @@ class SlowRequests
         ConfiguresAfterResolving;
 
     /**
+     * The queries that have been executed.
+     *
+     * @var array<int, array{connectionName: string, time: float, sql: string, bindings: array}>
+     */
+    protected array $queries = [];
+
+    /**
      * Create a new recorder instance.
      */
     public function __construct(
@@ -40,6 +49,12 @@ class SlowRequests
             $app,
             Kernel::class,
             fn (Kernel $kernel) => $kernel->whenRequestLifecycleIsLongerThan(-1, $record) // @phpstan-ignore method.notFound
+        );
+
+        $this->afterResolving(
+            $app,
+            Dispatcher::class,
+            fn (Dispatcher $events) => $events->listen(fn (QueryExecuted $event) => $this->onQueryExecuted($event))
         );
     }
 
@@ -75,5 +90,25 @@ class SlowRequests
                 timestamp: $startedAt,
             )->count();
         }
+
+        // this would be configurable...
+        $this->pulse->set('slow_request_report', json_encode([$request->method(), $path, $via], flags: JSON_THROW_ON_ERROR), json_encode([
+            'duration' => $duration,
+            'queries' => $this->queries,
+        ], flags: JSON_THROW_ON_ERROR), $startedAt);
+    }
+
+    public function onQueryExecuted(QueryExecuted $event): void
+    {
+        if (count($this->queries) === 100) {
+            return;
+        }
+
+        $this->queries[] = [
+            'connectionName' => $event->connectionName,
+            'time' => $event->time,
+            'sql' => $event->sql,
+            'bindings' => $event->bindings,
+        ];
     }
 }

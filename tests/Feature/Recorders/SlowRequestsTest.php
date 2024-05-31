@@ -2,12 +2,14 @@
 
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Sleep;
 use Laravel\Pulse\Facades\Pulse;
+use Laravel\Pulse\Recorders\SlowQueries;
 use Laravel\Pulse\Recorders\SlowRequests;
 use Tests\User;
 
@@ -98,6 +100,48 @@ it('captures requests over the threshold', function () {
     expect($aggregates[7]->value)->toEqual(4000);
 
     Pulse::ignore(fn () => expect(DB::table('pulse_values')->count())->toBe(0));
+});
+
+it('saves a report for requests over the threshold', function () {
+    Date::setTestNow('2000-01-02 03:04:05');
+    Config::set('pulse.recorders.'.SlowRequests::class.'.threshold', 0);
+    Config::set('pulse.recorders.'.SlowQueries::class.'.threshold', 2000);
+    Config::set('pulse.recorders.'.SlowQueries::class.'.sample_rate', 1);
+    prependListener(QueryExecuted::class, function (QueryExecuted $event) {
+        $event->time = 1250;
+    });
+
+    Route::get('test-route', function () {
+        Date::setTestNow('2000-01-02 03:04:09');
+        DB::connection()->statement('select * from users');
+    });
+
+    get('test-route');
+
+    $entries = Pulse::ignore(fn () => DB::table('pulse_entries')->get());
+
+    expect($entries)->toHaveCount(1);
+    expect($entries[0]->timestamp)->toBe(946782245);
+    expect($entries[0]->type)->toBe('slow_request');
+    expect($entries[0]->key)->toBe(json_encode(['GET', '/test-route', 'Closure']));
+    expect($entries[0]->key_hash)->toBe(keyHash(json_encode(['GET', '/test-route', 'Closure'])));
+    expect($entries[0]->value)->toBe(4000);
+
+    $aggregates = Pulse::ignore(fn () => DB::table('pulse_aggregates')->orderBy('type')->orderBy('period')->orderBy('aggregate')->get());
+    expect($aggregates)->toHaveCount(8);
+
+    $value = Pulse::ignore(fn () => DB::table('pulse_values')->sole());
+    expect($value->type)->toBe('slow_request_report');
+    expect($value->key)->toBe(json_encode(['GET', '/test-route', 'Closure']));
+    expect($value->key_hash)->toBe(keyHash(json_encode(['GET', '/test-route', 'Closure'])));
+//    expect($value->timestamp)->toBe(946782240);
+
+    $payload = json_decode($value->value, true);
+    $query = end($payload['queries']);
+    expect($query['connectionName'])->toBe('sqlite');
+    expect($query['time'])->toBe(1250);
+    expect($query['sql'])->toBe('select * from users');
+    expect($query['bindings'])->toBe([]);
 });
 
 it('can configure threshold per route', function () {
