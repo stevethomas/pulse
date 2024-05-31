@@ -105,8 +105,7 @@ it('captures requests over the threshold', function () {
 it('saves a report for requests over the threshold', function () {
     Date::setTestNow('2000-01-02 03:04:05');
     Config::set('pulse.recorders.'.SlowRequests::class.'.threshold', 0);
-    Config::set('pulse.recorders.'.SlowQueries::class.'.threshold', 2000);
-    Config::set('pulse.recorders.'.SlowQueries::class.'.sample_rate', 1);
+    Config::set('pulse.recorders.'.SlowQueries::class.'.sample_rate', 0);
     prependListener(QueryExecuted::class, function (QueryExecuted $event) {
         $event->time = 1250;
     });
